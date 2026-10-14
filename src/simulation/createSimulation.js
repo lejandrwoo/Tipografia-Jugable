@@ -8,13 +8,11 @@ export class Simulation {
         this.lettersData = [];
         this.physicsParticles = [];
         
-        // Raycaster e Interacción
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
         this.dragPlane = new THREE.Plane();
         this.selectedGroup = null;
         this.dragOffset = new THREE.Vector3();
-        this.lastDragPos = new THREE.Vector3();
         
         this.initScene();
     }
@@ -25,7 +23,6 @@ export class Simulation {
         this.scene.fog = new THREE.FogExp2(PARAMS.colors.background, 0.02);
 
         this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
-        // Cámara un poco más alta y alejada para ver toda la palabra
         this.camera.position.set(0, 8, 22);
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
@@ -57,7 +54,6 @@ export class Simulation {
     }
 
     startSandboxMode() {
-        // Spawnear todas las letras de inmediato en sus posiciones finales
         PARAMS.word.forEach((char, index) => {
             const geo = this.createCleanGeometry(char);
             const group = this.createVisualGroup(geo);
@@ -65,7 +61,6 @@ export class Simulation {
             const offset = (index - (PARAMS.word.length - 1) / 2) * PARAMS.spacing;
             group.position.set(offset, 2, 0);
             
-            // Datos físicos
             group.userData = {
                 isBroken: false,
                 originalPos: new THREE.Vector3(offset, 2, 0),
@@ -73,18 +68,16 @@ export class Simulation {
                 angularVelocity: new THREE.Vector3(0,0,0),
                 clickCount: 0,
                 lastClickTime: 0,
-                basePositions: Array.from(geo.attributes.position.array)
+                flashTimer: 0 // Nuevo temporizador de impacto
             };
             
             this.scene.add(group);
             this.lettersData.push(group);
             
-            // Animación de entrada
             gsap.from(group.position, { y: 15, duration: 1.5, ease: "bounce.out", delay: index * 0.1 });
         });
     }
 
-    // Geometría limpia y gruesa (Bloques perfectos sin pliegues extraños)
     createCleanGeometry(char) {
         const shape = new THREE.Shape();
         if (char === 'M') {
@@ -104,34 +97,28 @@ export class Simulation {
             shape.lineTo(-1.6, 2);
         }
         
-        // Depth amplio y bevel suave para topología limpia
-        const geo = new THREE.ExtrudeGeometry(shape, { 
-            depth: 1.0, bevelEnabled: true, bevelSegments: 2, steps: 1, 
-            bevelSize: 0.05, bevelThickness: 0.05 
-        });
+        const geo = new THREE.ExtrudeGeometry(shape, { depth: 1.0, bevelEnabled: true, bevelSegments: 2, steps: 1, bevelSize: 0.05, bevelThickness: 0.05 });
         geo.center();
         return geo;
     }
 
     createVisualGroup(geometry) {
         const group = new THREE.Group();
-        
         const meshMat = new THREE.MeshStandardMaterial({ 
-            color: PARAMS.colors.meshBase, roughness: 0.6, metalness: 0.2, 
+            color: PARAMS.colors.palette[0], 
+            roughness: 0.5, metalness: 0.2, 
             polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 
         });
         const mesh = new THREE.Mesh(geometry, meshMat);
         
         const edgesGeo = new THREE.EdgesGeometry(geometry);
-        const linesMat = new THREE.LineBasicMaterial({ color: PARAMS.colors.edges, transparent: true, opacity: 0.8 });
+        const linesMat = new THREE.LineBasicMaterial({ color: PARAMS.colors.edges, transparent: true, opacity: 0.5 });
         const lines = new THREE.LineSegments(edgesGeo, linesMat);
         
         const pointsMat = new THREE.PointsMaterial({ color: PARAMS.colors.vertices, size: 0.15 });
         const points = new THREE.Points(geometry, pointsMat);
         
-        group.add(mesh);
-        group.add(lines);
-        group.add(points);
+        group.add(mesh); group.add(lines); group.add(points);
         return group;
     }
 
@@ -154,7 +141,6 @@ export class Simulation {
             this.selectedGroup = intersects[0].object.parent;
             const data = this.selectedGroup.userData;
             
-            // Inflado por clics (Mecánica de globo)
             const now = Date.now();
             if (now - data.lastClickTime < 600) {
                 data.clickCount++;
@@ -163,7 +149,6 @@ export class Simulation {
             }
             data.lastClickTime = now;
             
-            // Límite de explosión
             if (data.clickCount >= 12) {
                 this.shatterLetter(this.selectedGroup);
                 this.selectedGroup = null;
@@ -177,7 +162,6 @@ export class Simulation {
             this.dragPlane.setFromNormalAndCoplanarPoint(this.camera.getWorldDirection(new THREE.Vector3()), intersects[0].point);
             this.raycaster.ray.intersectPlane(this.dragPlane, this.dragOffset);
             this.dragOffset.sub(this.selectedGroup.position);
-            this.lastDragPos.copy(this.selectedGroup.position);
         }
     }
 
@@ -190,57 +174,15 @@ export class Simulation {
         const point = new THREE.Vector3();
         if (this.raycaster.ray.intersectPlane(this.dragPlane, point)) {
             const targetPos = point.sub(this.dragOffset);
-            const dist = targetPos.distanceTo(this.lastDragPos);
-            
-            // Rotura por estiramiento excesivo
-            if (dist > 2.5) {
-                this.shatterLetter(this.selectedGroup);
-                this.selectedGroup = null;
-                this.controls.enabled = true;
-                return;
-            }
-
-            // Aplicar deformación elástica visual a los vértices (Soft Selection temporal)
-            const geo = this.selectedGroup.children[0].geometry;
-            const pos = geo.attributes.position;
-            const base = this.selectedGroup.userData.basePositions;
-            
-            for (let i = 0; i < pos.count; i++) {
-                const factor = 0.5 + (Math.sin(i) * 0.05);
-                pos.setXYZ(i, 
-                    base[i*3] + ((targetPos.x - this.lastDragPos.x) * factor),
-                    base[i*3+1] + ((targetPos.y - this.lastDragPos.y) * factor),
-                    base[i*3+2] + ((targetPos.z - this.lastDragPos.z) * factor)
-                );
-            }
-            pos.needsUpdate = true;
-            this.selectedGroup.children[1].geometry.dispose();
-            this.selectedGroup.children[1].geometry = new THREE.EdgesGeometry(geo);
-
-            // Guardar inercia
             this.selectedGroup.userData.velocity.copy(targetPos).sub(this.selectedGroup.position).multiplyScalar(0.4);
             this.selectedGroup.position.copy(targetPos);
-            this.lastDragPos.copy(targetPos);
         }
     }
 
     onPointerUp() {
         if (this.selectedGroup) {
-            // Rebotar vértices a la normalidad
-            const geo = this.selectedGroup.children[0].geometry;
-            const pos = geo.attributes.position;
-            const base = this.selectedGroup.userData.basePositions;
-            
-            for (let i = 0; i < pos.count; i++) {
-                pos.setXYZ(i, base[i*3], base[i*3+1], base[i*3+2]);
-            }
-            pos.needsUpdate = true;
-            this.selectedGroup.children[1].geometry.dispose();
-            this.selectedGroup.children[1].geometry = new THREE.EdgesGeometry(geo);
-
-            // Inercia de giro al soltar
             this.selectedGroup.userData.angularVelocity.set(
-                (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3
+                (Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4
             );
         }
         this.selectedGroup = null;
@@ -251,9 +193,11 @@ export class Simulation {
         if (group.userData.isBroken) return;
         group.userData.isBroken = true;
         group.visible = false;
-
+        group.userData.clickCount = 0; 
+        group.userData.flashTimer = 0;
+        
         const mat = new THREE.MeshBasicMaterial({ color: PARAMS.colors.vertices });
-        const geo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+        const geo = new THREE.BoxGeometry(0.4, 0.4, 0.4);
         
         for (let i = 0; i < 25; i++) {
             const fragment = new THREE.Mesh(geo, mat);
@@ -263,37 +207,66 @@ export class Simulation {
             this.physicsParticles.push({ mesh: fragment, age: 0 });
         }
 
-        // Reconstrucción automática a los 5 segundos
         setTimeout(() => {
             group.position.copy(group.userData.originalPos);
             group.rotation.set(0,0,0);
             group.scale.set(1,1,1);
-            group.userData.clickCount = 0;
             group.userData.velocity.set(0,0,0);
             group.userData.angularVelocity.set(0,0,0);
             group.userData.isBroken = false;
             group.visible = true;
             
+            group.children[0].material.color.setHex(PARAMS.colors.palette[0]);
+            
             gsap.from(group.scale, { x: 0, y: 0, z: 0, duration: 1.2, ease: "elastic.out(1, 0.4)" });
         }, 5000);
+    }
+
+    updateInflationColor(letter) {
+        const data = letter.userData;
+        const mesh = letter.children[0];
+        
+        // Base: Color según el inflado
+        const ratio = Math.min(1, Math.max(0, data.clickCount / 11));
+        const segment = ratio * (PARAMS.colors.palette.length - 1);
+        const index = Math.floor(segment);
+        const t = segment - index;
+
+        const baseColor = new THREE.Color();
+        if (index >= PARAMS.colors.palette.length - 1) {
+            baseColor.setHex(PARAMS.colors.palette[PARAMS.colors.palette.length - 1]);
+        } else {
+            const colorA = new THREE.Color(PARAMS.colors.palette[index]);
+            const colorB = new THREE.Color(PARAMS.colors.palette[index + 1]);
+            baseColor.copy(colorA).lerp(colorB, t);
+        }
+
+        // Capa de impacto: Mezcla roja si hay colisión
+        if (data.flashTimer > 0) {
+            const flashColor = new THREE.Color(PARAMS.colors.impactFlash);
+            mesh.material.color.copy(baseColor).lerp(flashColor, data.flashTimer);
+            data.flashTimer -= 0.05; // Velocidad de desvanecimiento del rojo
+            if (data.flashTimer < 0) data.flashTimer = 0;
+        } else {
+            mesh.material.color.copy(baseColor);
+        }
     }
 
     updatePhysics() {
         const gravity = 0.02;
         const floorY = 1.0;
 
-        // Físicas de Letras
         for (let i = 0; i < this.lettersData.length; i++) {
             const letter = this.lettersData[i];
             const data = letter.userData;
-            
+
             if (data.isBroken || letter === this.selectedGroup) {
-                // Desinflado de globo por inactividad
                 if (Date.now() - data.lastClickTime > 1500 && data.clickCount > 0) {
-                    data.clickCount = Math.max(0, data.clickCount - 0.1); // Pierde aire
+                    data.clickCount = Math.max(0, data.clickCount - 0.1); 
                 }
                 const scale = 1 + (data.clickCount * 0.15);
                 letter.scale.set(scale, scale, scale);
+                this.updateInflationColor(letter);
                 continue;
             }
 
@@ -310,21 +283,24 @@ export class Simulation {
             if (letter.position.y < floorY) {
                 letter.position.y = floorY;
                 if (Math.abs(data.velocity.y) > 0.8) {
-                    this.shatterLetter(letter); // Estalla si cae muy duro
+                    this.shatterLetter(letter); 
                 } else {
-                    data.velocity.y *= -0.6; // Rebote
+                    // Activar destello de impacto si la caída es lo suficientemente fuerte
+                    if (Math.abs(data.velocity.y) > 0.1) data.flashTimer = 1.0;
+                    data.velocity.y *= -0.6; 
                     data.velocity.x *= 0.8; data.velocity.z *= 0.8;
                 }
             }
 
-            // Desinflado natural
             if (Date.now() - data.lastClickTime > 1500 && data.clickCount > 0) {
                 data.clickCount = Math.max(0, data.clickCount - 0.1);
             }
+            
             const currentScale = 1 + (data.clickCount * 0.15);
             letter.scale.set(currentScale, currentScale, currentScale);
+            this.updateInflationColor(letter);
 
-            // Colisiones con otras letras (Se empujan y caen)
+            // Colisiones entre letras
             for (let j = i + 1; j < this.lettersData.length; j++) {
                 const other = this.lettersData[j];
                 if (other.userData.isBroken) continue;
@@ -335,6 +311,13 @@ export class Simulation {
                 if (dist < minDistance) {
                     const normal = letter.position.clone().sub(other.position).normalize();
                     const overlap = minDistance - dist;
+
+                    // Activar destello rojo en ambas letras al colisionar
+                    if (overlap > 0.05) {
+                        data.flashTimer = 1.0;
+                        other.userData.flashTimer = 1.0;
+                    }
+
                     letter.position.add(normal.clone().multiplyScalar(overlap * 0.5));
                     other.position.add(normal.clone().multiplyScalar(-overlap * 0.5));
                     
