@@ -8,3 +8,6 @@ export class LabPanel {
         this.container.innerHTML = `<div id="brand-logo">autodesk</div>`;
     }
 }
+//comentario totalmente innesesario
+
+
